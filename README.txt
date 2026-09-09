@@ -38,6 +38,23 @@
                                 | GitHub Pages |
                                 +--------------+
                                 
+## Collection reliability
+
+Collection fetches up to four sources concurrently, with three attempts per
+source and 2/4-second retry delays. Requests use a 10-second connection timeout
+and a 30-second read inactivity timeout. Source order still determines which
+record wins when station timestamps overlap. Partial source failures allow the
+remaining observations to be saved; failure of every source fails the run.
+
+Logs report each attempt, successful observation counts, elapsed time and a
+source summary. Actions streams these logs immediately and limits the collection
+step to five minutes. Request timeouts are not an overall wall-clock deadline
+(DNS, multiple addresses and slow responses can take longer). For eight sources
+each failing on a single connection timeout, the expected retry wait is about
+72 seconds, excluding overhead. These limits do not restore an unavailable
+upstream service; check runner connectivity and source availability if all
+sources fail repeatedly.
+
 ## Static site
 
 The repository now includes a Vite + TypeScript + ECharts static site in

@@ -42,7 +42,8 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Collect latest observations
-        run: python main.py
+        timeout-minutes: 5
+        run: python -u main.py
 
       - name: Commit data changes
         id: commit

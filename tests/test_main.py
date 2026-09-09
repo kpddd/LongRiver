@@ -2,6 +2,7 @@ import csv
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 from unittest.mock import Mock, call, patch
 
 import requests
@@ -146,7 +147,20 @@ class FetchRiverDataTests(unittest.TestCase):
         data = fetch_river_data("http://example.test/source")
 
         self.assertEqual(data[0]["stcd"], "1")
+        self.assertEqual(get.call_args.kwargs["timeout"], (10, 30))
         response.raise_for_status.assert_called_once_with()
+
+    @patch("longriver.time.sleep")
+    @patch("longriver.requests.get")
+    def test_recovers_after_connect_timeout(self, get: Mock, sleep: Mock) -> None:
+        response = Mock()
+        response.text = (
+            'var sssq = [{"rvnm":"江", "stcd":"1", "stnm":"甲", "tm":100}];'
+        )
+        get.side_effect = [requests.ConnectTimeout("timed out"), response]
+        self.assertEqual(fetch_river_data("http://example.test")[0]["stcd"], "1")
+        self.assertEqual(get.call_count, 2)
+        sleep.assert_called_once_with(2)
 
     @patch("longriver.time.sleep")
     @patch(
@@ -182,7 +196,7 @@ class MergeRiverDataTests(unittest.TestCase):
 
     @patch("longriver.fetch_river_data")
     def test_fetches_all_configured_sources(self, fetch: Mock) -> None:
-        fetch.side_effect = [
+        results = [
             [
                 {
                     "rvnm": "长江干流",
@@ -193,6 +207,7 @@ class MergeRiverDataTests(unittest.TestCase):
             ]
             for index, _ in enumerate(SOURCE_URLS)
         ]
+        fetch.side_effect = dict(zip(SOURCE_URLS, results)).__getitem__
 
         data = fetch_all_river_data()
 
@@ -200,19 +215,20 @@ class MergeRiverDataTests(unittest.TestCase):
             [station["stcd"] for station in data],
             [str(index) for index, _ in enumerate(SOURCE_URLS)],
         )
-        self.assertEqual(fetch.call_args_list, [call(url) for url in SOURCE_URLS])
+        self.assertCountEqual(fetch.call_args_list, [call(url) for url in SOURCE_URLS])
 
     @patch("longriver.fetch_river_data")
     def test_skips_failed_source_when_other_sources_succeed(self, fetch: Mock) -> None:
-        fetch.side_effect = [
-            RuntimeError("bad source"),
-            [{"rvnm": "长江干流", "stcd": "1", "stnm": "甲", "tm": 100}],
-        ]
+        def source(url):
+            if url == "http://bad.test":
+                raise RuntimeError("bad source")
+            return [{"rvnm": "长江干流", "stcd": "1", "stnm": "甲", "tm": 100}]
+        fetch.side_effect = source
 
         data = fetch_all_river_data(["http://bad.test", "http://good.test"])
 
         self.assertEqual([station["stcd"] for station in data], ["1"])
-        self.assertEqual(
+        self.assertCountEqual(
             fetch.call_args_list,
             [call("http://bad.test"), call("http://good.test")],
         )
@@ -223,6 +239,37 @@ class MergeRiverDataTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "all configured sources"):
             fetch_all_river_data(["http://bad.test"])
+
+    @patch("longriver.fetch_river_data")
+    def test_concurrent_completion_preserves_source_precedence(self, fetch: Mock) -> None:
+        second_finished = Event()
+        station = {"rvnm": "江", "stcd": "1", "stnm": "甲", "tm": 100}
+
+        def source(url):
+            if url == "first":
+                if not second_finished.wait(timeout=2):
+                    raise AssertionError("Sources were not fetched concurrently")
+                return [{**station, "q": 10}]
+            second_finished.set()
+            return [{**station, "q": 20}]
+
+        fetch.side_effect = source
+        self.assertEqual(
+            fetch_all_river_data(iter(["first", "second"])),
+            [{**station, "q": 10}],
+        )
+
+    @patch("longriver.fetch_river_data")
+    def test_all_failures_are_in_summary(self, fetch: Mock) -> None:
+        def source(url):
+            raise RuntimeError(f"{url}: ConnectTimeout")
+        fetch.side_effect = source
+        with self.assertRaisesRegex(RuntimeError, "first: ConnectTimeout; second: ConnectTimeout"):
+            fetch_all_river_data(["first", "second"])
+
+    def test_empty_sources_fail_explicitly(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "no sources configured"):
+            fetch_all_river_data([])
 
 
 class AppendCsvRecordTests(unittest.TestCase):

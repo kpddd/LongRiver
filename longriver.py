@@ -3,6 +3,7 @@ import json
 import re
 import time
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, cast
 
@@ -57,8 +58,9 @@ FIELD_ALIASES = {
     "WPTN": "wptn",
     "Z": "z",
 }
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = (10, 30)  # Connection timeout, then read inactivity timeout.
 MAX_ATTEMPTS = 3
+MAX_SOURCE_WORKERS = 4
 
 
 def normalize_river_station(
@@ -116,6 +118,7 @@ def parse_river_data(
 def fetch_river_data(url: str) -> list[RiverStation]:
     """Fetch one river data source with bounded retries."""
     last_error: Exception | None = None
+    started = time.monotonic()
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             response = requests.get(
@@ -128,18 +131,29 @@ def fetch_river_data(url: str) -> list[RiverStation]:
                 timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
-            return parse_river_data(
+            data = parse_river_data(
                 response.text,
                 SOURCE_DEFAULT_RIVER_NAMES.get(url),
             )
+            print(
+                f"Source OK: {url}, observations={len(data)}, "
+                f"elapsed={time.monotonic() - started:.1f}s",
+                flush=True,
+            )
+            return data
         except (requests.RequestException, ValueError) as error:
             last_error = error
+            print(
+                f"Fetch attempt {attempt}/{MAX_ATTEMPTS} failed: {url} "
+                f"[{type(error).__name__}]: {error}",
+                flush=True,
+            )
             if attempt < MAX_ATTEMPTS:
-                print(f"Fetch attempt {attempt}/{MAX_ATTEMPTS} failed: {error}")
                 time.sleep(attempt * 2)
 
     raise RuntimeError(
-        f"Failed to fetch river data from {url} after {MAX_ATTEMPTS} attempts"
+        f"Failed to fetch river data from {url} after {MAX_ATTEMPTS} attempts "
+        f"({type(last_error).__name__}, elapsed={time.monotonic() - started:.1f}s)"
     ) from last_error
 
 
@@ -162,20 +176,32 @@ def merge_river_data(
 def fetch_all_river_data(
     urls: Iterable[str] = SOURCE_URLS,
 ) -> list[RiverStation]:
-    """Fetch and merge all configured river data sources."""
+    """Fetch concurrently; preserve source order for overlap precedence."""
+    source_urls = list(urls)
     datasets: list[list[RiverStation]] = []
     errors: list[RuntimeError] = []
 
-    for url in urls:
-        try:
-            datasets.append(fetch_river_data(url))
-        except RuntimeError as error:
-            errors.append(error)
-            print(error)
+    with ThreadPoolExecutor(max_workers=MAX_SOURCE_WORKERS) as executor:
+        futures = [executor.submit(fetch_river_data, url) for url in source_urls]
+        # Reading in configured order keeps merging deterministic even when a
+        # lower-priority source finishes first. Workers log progress immediately.
+        for future in futures:
+            try:
+                datasets.append(future.result())
+            except RuntimeError as error:
+                errors.append(error)
+                print(error, flush=True)
+
+    print(
+        f"Source summary: {len(datasets)}/{len(source_urls)} succeeded, "
+        f"{len(errors)} failed",
+        flush=True,
+    )
 
     if not datasets:
         raise RuntimeError(
-            "Failed to fetch river data from all configured sources"
+            "Failed to fetch river data from all configured sources: "
+            + ("; ".join(str(error) for error in errors) or "no sources configured")
         ) from (errors[-1] if errors else None)
 
     return merge_river_data(datasets)
