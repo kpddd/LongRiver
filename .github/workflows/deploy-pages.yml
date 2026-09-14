@@ -57,7 +57,7 @@ jobs:
         run: python -m unittest discover -s tests -v
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -75,10 +75,10 @@ jobs:
         run: python site/scripts/build_site_data.py --input data --output .codex/outputs/pages/data
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: .codex/outputs/pages
 
@@ -93,4 +93,4 @@ jobs:
     steps:
       - name: Deploy artifact
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
