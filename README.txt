@@ -49,11 +49,23 @@ remaining observations to be saved; failure of every source fails the run.
 Logs report each attempt, successful observation counts, elapsed time and a
 source summary. Actions streams these logs immediately and limits the collection
 step to five minutes. Request timeouts are not an overall wall-clock deadline
-(DNS, multiple addresses and slow responses can take longer). For eight sources
+(DNS, multiple addresses and slow responses can take longer). For seven sources
 each failing on a single connection timeout, the expected retry wait is about
 72 seconds, excluding overhead. These limits do not restore an unavailable
 upstream service; check runner connectivity and source availability if all
 sources fail repeatedly.
+
+Actions retries an unsuccessful live collection on a fresh macOS runner after
+Ubuntu, using the same collection workflow. Only the collection step is allowed
+to defer failure: dependency installation, tests and commit/push errors still
+fail immediately. A final verification job fails the workflow if neither runner
+collected observations successfully. Failed attempts do not commit data or deploy
+Pages; successful runs with no new observations do not redeploy Pages.
+
+The retired /sssqw3.html source returned a literal 404 page (HTTP 200) and has
+been removed. The seven remaining sources were checked for valid station data.
+Changes to collection code, tests or workflows also trigger collection on push,
+so fixes can be verified without waiting for the scheduled run.
 
 ## Static site
 

@@ -14,7 +14,6 @@ RiverStation = dict[str, Any]
 SOURCE_URLS = (
     "http://www.cjh.com.cn/sqindex.html",
     "http://www.cjh.com.cn/sssqcwww.html",
-    "http://www.cjh.com.cn/sssqw3.html",
     "http://sy.cjh.com.cn/",
     "http://zy.cjh.com.cn/sqall.html",
     "http://xy.cjh.com.cn/index.html",

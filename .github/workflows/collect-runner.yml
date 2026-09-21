@@ -1,0 +1,81 @@
+name: Collect on one runner
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: Hosted runner pool for this collection attempt
+        required: true
+        type: string
+    outputs:
+      collected:
+        description: Whether live observations were fetched successfully
+        value: ${{ jobs.collect.outputs.collected }}
+      data_changed:
+        description: Whether observations were committed and pushed
+        value: ${{ jobs.collect.outputs.data_changed }}
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    name: Fetch, test and commit data
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    outputs:
+      collected: ${{ steps.fetch.outcome == 'success' }}
+      data_changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - name: Check out master
+        uses: actions/checkout@v7
+        with:
+          ref: master
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install Python dependencies
+        run: python -m pip install --disable-pip-version-check requests
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Collect latest observations
+        id: fetch
+        continue-on-error: true
+        timeout-minutes: 5
+        run: python -u main.py
+
+      - name: Commit data changes
+        if: steps.fetch.outcome == 'success'
+        id: commit
+        shell: bash
+        run: |
+          if [[ -z "$(git status --porcelain -- data)" ]]; then
+            echo "No data changes to commit."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- data
+          git commit -m "chore(data): update LongRiver observations"
+
+          if ! git push origin HEAD:master; then
+            echo "Remote master advanced; rebasing the data commit once."
+            git pull --rebase origin master
+            git push origin HEAD:master
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Report unavailable sources
+        if: steps.fetch.outcome == 'failure'
+        shell: bash
+        run: |
+          echo "::warning::Collection failed on $RUNNER_OS; no data was committed."
+          echo "Collection failed on $RUNNER_OS. See the collection log for source errors." >> "$GITHUB_STEP_SUMMARY"

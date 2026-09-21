@@ -5,6 +5,14 @@ on:
     # GitHub cron uses UTC. Run at minute 20 and 50 of every hour.
     - cron: "20,50 * * * *"
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/collect-data.yml"
+      - ".github/workflows/collect-runner.yml"
+      - "longriver.py"
+      - "main.py"
+      - "tests/**"
 
 permissions:
   contents: write
@@ -17,61 +25,49 @@ concurrency:
 
 jobs:
   collect:
-    name: Fetch, test and commit data
+    name: Primary collection
+    uses: ./.github/workflows/collect-runner.yml
+    with:
+      runner: ubuntu-latest
+
+  fallback:
+    name: Retry collection on a different runner pool
+    needs: collect
+    # Only source collection is recoverable. Setup, tests and push failures stay fatal.
+    if: needs.collect.outputs.collected == 'false'
+    uses: ./.github/workflows/collect-runner.yml
+    with:
+      runner: macos-15
+
+  verify:
+    name: Require successful live collection
+    needs: [collect, fallback]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
+    timeout-minutes: 2
     outputs:
-      data_changed: ${{ steps.commit.outputs.changed }}
+      data_changed: ${{ needs.collect.outputs.data_changed == 'true' || needs.fallback.outputs.data_changed == 'true' }}
     steps:
-      - name: Check out master
-        uses: actions/checkout@v7
-        with:
-          ref: master
-
-      - name: Set up Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.x"
-
-      - name: Install Python dependencies
-        run: python -m pip install --disable-pip-version-check requests
-
-      - name: Run tests
-        run: python -m unittest discover -s tests -v
-
-      - name: Collect latest observations
-        timeout-minutes: 5
-        run: python -u main.py
-
-      - name: Commit data changes
-        id: commit
-        shell: bash
+      - name: Check collection result
+        env:
+          PRIMARY_RESULT: ${{ needs.collect.result }}
+          PRIMARY_COLLECTED: ${{ needs.collect.outputs.collected }}
+          FALLBACK_RESULT: ${{ needs.fallback.result }}
+          FALLBACK_COLLECTED: ${{ needs.fallback.outputs.collected }}
         run: |
-          if [[ -z "$(git status --porcelain -- data)" ]]; then
-            echo "No data changes to commit."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [[ "$PRIMARY_RESULT" == "success" && "$PRIMARY_COLLECTED" == "true" ]]; then
+            echo "Live observations collected on the primary runner." >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$PRIMARY_RESULT" == "success" && "$FALLBACK_RESULT" == "success" && "$FALLBACK_COLLECTED" == "true" ]]; then
+            echo "Live observations recovered on the fallback runner." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::No successful live collection. Check source connectivity and collection logs; existing data has been preserved."
+            exit 1
           fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -- data
-          git commit -m "chore(data): update LongRiver observations"
-
-          if ! git push origin HEAD:master; then
-            echo "Remote master advanced; rebasing the data commit once."
-            git pull --rebase origin master
-            git push origin HEAD:master
-          fi
-
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
   deploy-pages:
     name: Deploy updated data to Pages
-    needs: collect
-    if: needs.collect.outputs.data_changed == 'true'
+    needs: verify
+    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.verify.outputs.data_changed == 'true' }}
     permissions:
       contents: read
       pages: write
